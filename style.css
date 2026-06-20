@@ -219,3 +219,100 @@ li {
 .google-btn:hover {
   background-color: #f7f7f7;
 }
+
+.logout-btn {
+  width: 100%;
+  padding: 12px;
+  background-color: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+  margin-top: 20px;
+  font-weight: bold;
+  transition: background 0.2s;
+}
+
+.logout-btn:hover {
+  background-color: #c82333;
+}
+
+/* تصميم الإشعارات المنبثقة (Toasts) */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.toast {
+  min-width: 250px;
+  max-width: 350px;
+  padding: 15px 20px;
+  border-radius: 8px;
+  color: white;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  pointer-events: auto;
+  animation: slideIn 0.3s ease forwards;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.toast-close-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 20px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 0 5px;
+}
+
+.toast-close-btn:hover {
+  opacity: 1;
+}
+
+.toast-success {
+  background-color: #2eb85c;
+  border-left: 5px solid #1b8d3f;
+}
+
+.toast-error {
+  background-color: #e55353;
+  border-left: 5px solid #c23131;
+}
+
+.toast-info {
+  background-color: #39f;
+  border-left: 5px solid #007acc;
+}
+
+.toast.fade-out {
+  opacity: 0;
+  transform: translateY(-20px);
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}

@@ -1,6 +1,6 @@
 // Firebase SDK (Firestore + Auth)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, addDoc, deleteDoc, doc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 import { 
     getAuth, 
     createUserWithEmailAndPassword, 
@@ -24,13 +24,18 @@ const firebaseConfig = {
 
 // Firestore and Firebase Authentication
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager()
+  })
+});
 const auth = getAuth(app);
 
 // link html elements to javascript
 const todoInput = document.getElementById("todo-input");
 const addBtn = document.getElementById("add-btn");
 const todoList = document.getElementById("todo-list");
+const logoutBtn = document.getElementById("logout-btn");
 
 // login/signup form elements
 const authContainer = document.getElementById('auth-container');
@@ -45,6 +50,71 @@ const googleBtn = document.getElementById('google-btn');
 const provider = new GoogleAuthProvider();
 
 let isLoginMode = true; 
+let unsubscribeTodos = null; // store the unsubscribe function for firestore listener
+
+// Function to show toast notifications
+function showToast(message, type = "info") {
+    const container = document.getElementById("toast-container");
+    if (!container) return;
+
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${type}`;
+
+    // Text container
+    const textSpan = document.createElement("span");
+    textSpan.innerText = message;
+    toast.appendChild(textSpan);
+
+    // Close button
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "toast-close-btn";
+    closeBtn.innerHTML = "&times;"; // "×" symbol
+    closeBtn.addEventListener("click", () => {
+        dismissToast(toast);
+    });
+    toast.appendChild(closeBtn);
+
+    container.appendChild(toast);
+
+    let isDismissed = false;
+    function dismissToast(el) {
+        if (isDismissed) return;
+        isDismissed = true;
+        el.classList.add("fade-out");
+        
+        // Remove from DOM after transition finishes (300ms)
+        setTimeout(() => {
+            el.remove();
+        }, 300);
+    }
+
+    // Fade out and remove automatically after 5 seconds
+    setTimeout(() => {
+        dismissToast(toast);
+    }, 5000);
+}
+
+// Function to translate Firebase error codes to friendly Arabic messages
+function getFriendlyErrorMessage(error) {
+    const code = error?.code || error?.message || "";
+    if (code.includes("auth/invalid-credential") || code.includes("auth/user-not-found") || code.includes("auth/wrong-password")) {
+        return "البريد الإلكتروني أو كلمة المرور غير صحيحة. ❌";
+    }
+    if (code.includes("auth/email-already-in-use")) {
+        return "هذا البريد الإلكتروني مسجل بالفعل. 📧";
+    }
+    if (code.includes("auth/weak-password")) {
+        return "كلمة المرور ضعيفة جداً (يجب أن تكون 6 أحرف على الأقل). 🔒";
+    }
+    if (code.includes("auth/invalid-email")) {
+        return "صيغة البريد الإلكتروني غير صحيحة. ✉️";
+    }
+    if (code.includes("auth/network-request-failed")) {
+        return "مشكلة في الاتصال بالإنترنت. 🌐";
+    }
+    // Default error message
+    return "حدث خطأ ما، يرجى المحاولة مرة أخرى.";
+}
 
 // toggle login/signup mode
 toggleAuthMode.addEventListener('click', () => {
@@ -71,50 +141,86 @@ authForm.addEventListener('submit', (e) => {
         // sign in with email and password
         signInWithEmailAndPassword(auth, email, password)
             .then(() => {
-                alert("تم تسجيل الدخول بنجاح! 🎉");
+                showToast("تم تسجيل الدخول بنجاح! 🎉", "success");
             })
             .catch((error) => {
-                alert("خطأ في الدخول: " + error.message);
+                showToast(getFriendlyErrorMessage(error), "error");
             });
     } else {
         // create new account
         createUserWithEmailAndPassword(auth, email, password)
             .then((userCredential) => {
-                // get user object
-                const user = userCredential.user;
-                
-                // send email verification
-                sendEmailVerification(user)
-                    .then(() => {
-                        alert("تم إنشاء الحساب بنجاح! 🎉 وتبعتلك رسالة تأكيد على إيميلك، يرجى تفعيل الحساب.");
-                    });
+                showToast("تم إنشاء الحساب بنجاح! 🎉 تم تسجيل دخولك تلقائياً.", "success");
             })
             .catch((error) => {
-                alert("خطأ في الإنشاء: " + error.message);
+                showToast(getFriendlyErrorMessage(error), "error");
             });
     }
 });
 
+// Function to start listening to user's todos
+function startListeningToTodos(userId) {
+    // If we're already listening, unsubscribe first
+    if (unsubscribeTodos) {
+        unsubscribeTodos();
+    }
+
+    // Query only current user's todos
+    const q = query(collection(db, "todos"), where("userId", "==", userId));
+
+    unsubscribeTodos = onSnapshot(q, (snapshot) => {
+        todoList.innerHTML = ""; 
+        const tasks = [];
+
+        snapshot.forEach((documentSnapshot) => {
+            const task = documentSnapshot.data();
+            tasks.push({
+                id: documentSnapshot.id,
+                ...task
+            });
+        });
+
+        // Sort tasks client-side by creation date (oldest first)
+        tasks.sort((a, b) => {
+            const timeA = a.createdAt?.seconds || 0;
+            const timeB = b.createdAt?.seconds || 0;
+            return timeA - timeB;
+        });
+
+        tasks.forEach((task) => {
+            const li = document.createElement("li");
+            li.innerHTML = `
+                <span>${task.text}</span>
+                <button class="delete-btn" data-id="${task.id}">مسح</button>
+            `;
+            todoList.appendChild(li);
+        });
+
+        setupDeleteButtons();
+    }, (error) => {
+        console.error("خطأ أثناء جلب المهام: ", error);
+    });
+}
+
 // switch login mode and user mode
 onAuthStateChanged(auth, (user) => {
     if (user) {
-        if (user.emailVerified || user.providerData[0].providerId === 'google.com') {
-            // show todo list and hide login form
-            authContainer.classList.add('hidden');
-            todoContainer.classList.remove('hidden');
-            console.log("المستخدم الحالي ومفعل:", user.uid);
-        } else {
-            // account not verified
-            alert("يرجى تفعيل حسابك من خلال الرابط المرسل إلى بريدك الإلكتروني أولاً! 📧");
-            
-            // hide todo list and show login form
-            authContainer.classList.remove('hidden');
-            todoContainer.classList.add('hidden');
-            
-            // sign out
-            auth.signOut(); 
-        }
+        // show todo list and hide login form
+        authContainer.classList.add('hidden');
+        todoContainer.classList.remove('hidden');
+        console.log("المستخدم الحالي:", user.uid);
+        
+        // Start listening to user's tasks
+        startListeningToTodos(user.uid);
     } else {
+        // Unsubscribe from firestore updates when logged out
+        if (unsubscribeTodos) {
+            unsubscribeTodos();
+            unsubscribeTodos = null;
+        }
+        // clear UI tasks list
+        todoList.innerHTML = "";
+
         // show login form and hide todo list
         authContainer.classList.remove('hidden');
         todoContainer.classList.add('hidden');
@@ -124,51 +230,52 @@ onAuthStateChanged(auth, (user) => {
 // add new task to firebase
 addBtn.addEventListener("click", async () => {
     const taskText = todoInput.value.trim();
+    const user = auth.currentUser;
+    
+    if (!user) {
+        showToast("يجب تسجيل الدخول أولاً!", "error");
+        return;
+    }
     
     if (taskText === "") {
-        alert("ايه المهمه الفاضيه دي 😆");
+        showToast("ايه المهمه الفاضيه دي 😆", "info");
         return;
     }
 
     try {
-        await addDoc(collection(db, "todos"), {
+        // Run without await so the input field clears immediately (even when offline)
+        addDoc(collection(db, "todos"), {
             text: taskText,
-            createdAt: new Date()
+            createdAt: new Date(),
+            userId: user.uid // associate task with the authenticated user
+        }).catch((error) => {
+            showToast("خطأ أثناء إضافة المهمة", "error");
+            console.error("خطأ أثناء إضافة المهمة في الخلفية: ", error);
         });
         
         todoInput.value = ""; 
     } catch (error) {
+        showToast("خطأ أثناء إضافة المهمة", "error");
         console.error("خطا اثناء إضافة المهمه: ", error);
     }
-});
-
-// read data from firebase and display it in the browser
-onSnapshot(collection(db, "todos"), (snapshot) => {
-    todoList.innerHTML = ""; 
-    
-    snapshot.forEach((documentSnapshot) => {
-        const task = documentSnapshot.data();
-        const taskId = documentSnapshot.id; 
-
-        const li = document.createElement("li");
-        li.innerHTML = `
-            <span>${task.text}</span>
-            <button class="delete-btn" data-id="${taskId}">مسح</button>
-        `;
-        
-        todoList.appendChild(li);
-    });
-
-    setupDeleteButtons();
 });
 
 // delete task from firebase
 function setupDeleteButtons() {
     const deleteButtons = document.querySelectorAll(".delete-btn");
     deleteButtons.forEach(btn => {
+        btn.replaceWith(btn.cloneNode(true)); // remove old listeners to prevent duplicates
+    });
+    
+    const newDeleteButtons = document.querySelectorAll(".delete-btn");
+    newDeleteButtons.forEach(btn => {
         btn.addEventListener("click", async (e) => {
             const id = e.target.getAttribute("data-id");
-            await deleteDoc(doc(db, "todos", id));
+            try {
+                await deleteDoc(doc(db, "todos", id));
+            } catch (error) {
+                console.error("خطأ أثناء مسح المهمة: ", error);
+            }
         });
     });
 }
@@ -177,9 +284,31 @@ function setupDeleteButtons() {
 googleBtn.addEventListener('click', () => {
     signInWithPopup(auth, provider)
         .then((result) => {
-            alert("تم تسجيل الدخول بحساب جوجل بنجاح! 🚀");
+            showToast("تم تسجيل الدخول بحساب جوجل بنجاح! 🚀", "success");
         })
         .catch((error) => {
-            alert("حصل خطأ أثناء الدخول بجوجل: " + error.message);
+            showToast(getFriendlyErrorMessage(error), "error");
         });
 });
+
+// sign out button listener
+logoutBtn.addEventListener("click", () => {
+    auth.signOut().then(() => {
+        showToast("تم تسجيل الخروج بنجاح!", "success");
+    }).catch((error) => {
+        showToast(getFriendlyErrorMessage(error), "error");
+    });
+});
+
+// Register Service Worker for PWA (offline reload capability)
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+            .then((reg) => {
+                console.log('Service Worker registered successfully with scope:', reg.scope);
+            })
+            .catch((err) => {
+                console.error('Service Worker registration failed:', err);
+            });
+    });
+}
