@@ -1,6 +1,6 @@
 // Firebase SDK (Firestore + Auth)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, addDoc, deleteDoc, doc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, addDoc, deleteDoc, doc, onSnapshot, query, where, updateDoc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 import { 
     getAuth, 
     createUserWithEmailAndPassword, 
@@ -36,6 +36,7 @@ const todoInput = document.getElementById("todo-input");
 const addBtn = document.getElementById("add-btn");
 const todoList = document.getElementById("todo-list");
 const logoutBtn = document.getElementById("logout-btn");
+const todoRecurring = document.getElementById("todo-recurring");
 
 // login/signup form elements
 const authContainer = document.getElementById('auth-container');
@@ -190,16 +191,96 @@ function startListeningToTodos(userId) {
         tasks.forEach((task) => {
             const li = document.createElement("li");
             li.innerHTML = `
-                <span>${task.text}</span>
+                <div class="task-content">
+                    <input type="checkbox" class="task-checkbox" data-id="${task.id}" ${task.completed ? 'checked' : ''}>
+                    <span class="task-text ${task.completed ? 'completed' : ''}">${task.text} ${task.recurring ? '🔄' : ''}</span>
+                </div>
                 <button class="delete-btn" data-id="${task.id}">مسح</button>
             `;
             todoList.appendChild(li);
         });
 
         setupDeleteButtons();
+        setupCheckboxListeners();
     }, (error) => {
         console.error("خطأ أثناء جلب المهام: ", error);
     });
+}
+
+// setup checkbox click listeners
+function setupCheckboxListeners() {
+    const checkboxes = document.querySelectorAll(".task-checkbox");
+    checkboxes.forEach(chk => {
+        chk.addEventListener("change", async (e) => {
+            const id = e.target.getAttribute("data-id");
+            const completed = e.target.checked;
+            try {
+                await updateDoc(doc(db, "todos", id), {
+                    completed: completed
+                });
+            } catch (error) {
+                showToast("خطأ أثناء تحديث حالة المهمة", "error");
+                console.error("خطأ أثناء تحديث المهمة: ", error);
+                e.target.checked = !completed; // revert on error
+            }
+        });
+    });
+}
+
+// Function to check and run daily cleanup at dawn (4:00 AM)
+async function checkAndRunCleanup(userId) {
+    const today = new Date();
+    const cleanupKey = `lastCleanupDate_${userId}`;
+    const lastCleanup = localStorage.getItem(cleanupKey);
+
+    const todaysDawn = new Date(today);
+    todaysDawn.setHours(4, 0, 0, 0);
+
+    let needsCleanup = false;
+    if (!lastCleanup) {
+        needsCleanup = true;
+    } else {
+        const lastCleanupDate = new Date(lastCleanup);
+        if (lastCleanupDate < todaysDawn && today >= todaysDawn) {
+            needsCleanup = true;
+        }
+    }
+
+    if (needsCleanup) {
+        console.log("جارٍ تشغيل التنظيف التلقائي الفجر للمهام...");
+        try {
+            const q = query(collection(db, "todos"), where("userId", "==", userId));
+            const querySnapshot = await getDocs(q);
+            
+            const batch = writeBatch(db);
+            let hasOperations = false;
+
+            querySnapshot.forEach((docSnap) => {
+                const task = docSnap.data();
+                const taskId = docSnap.id;
+
+                if (task.completed === true) {
+                    const taskRef = doc(db, "todos", taskId);
+                    if (task.recurring === true) {
+                        batch.update(taskRef, { completed: false });
+                        hasOperations = true;
+                    } else {
+                        batch.delete(taskRef);
+                        hasOperations = true;
+                    }
+                }
+            });
+
+            if (hasOperations) {
+                await batch.commit();
+                showToast("تم تنظيف وتصفير المهام لليوم الجديد! 🧹", "success");
+            }
+            
+            localStorage.setItem(cleanupKey, today.toISOString());
+        } catch (error) {
+            console.error("خطأ أثناء التنظيف التلقائي: ", error);
+        }
+    }
 }
 
 // switch login mode and user mode
@@ -209,6 +290,9 @@ onAuthStateChanged(auth, (user) => {
         authContainer.classList.add('hidden');
         todoContainer.classList.remove('hidden');
         console.log("المستخدم الحالي:", user.uid);
+        
+        // Run daily cleanup first
+        checkAndRunCleanup(user.uid);
         
         // Start listening to user's tasks
         startListeningToTodos(user.uid);
@@ -243,17 +327,22 @@ addBtn.addEventListener("click", async () => {
     }
 
     try {
+        const isRecurring = todoRecurring.checked;
+        
         // Run without await so the input field clears immediately (even when offline)
         addDoc(collection(db, "todos"), {
             text: taskText,
             createdAt: new Date(),
-            userId: user.uid // associate task with the authenticated user
+            userId: user.uid, // associate task with the authenticated user
+            completed: false,
+            recurring: isRecurring
         }).catch((error) => {
             showToast("خطأ أثناء إضافة المهمة", "error");
             console.error("خطأ أثناء إضافة المهمة في الخلفية: ", error);
         });
         
         todoInput.value = ""; 
+        todoRecurring.checked = false; // reset checkbox
     } catch (error) {
         showToast("خطأ أثناء إضافة المهمة", "error");
         console.error("خطا اثناء إضافة المهمه: ", error);
