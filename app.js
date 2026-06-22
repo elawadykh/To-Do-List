@@ -37,6 +37,10 @@ const addBtn = document.getElementById("add-btn");
 const todoList = document.getElementById("todo-list");
 const logoutBtn = document.getElementById("logout-btn");
 const todoRecurring = document.getElementById("todo-recurring");
+const aiSettingsToggleBtn = document.getElementById("ai-settings-toggle-btn");
+const aiSettingsPanel = document.getElementById("ai-settings-panel");
+const geminiApiKeyInput = document.getElementById("gemini-api-key");
+const saveApiKeyBtn = document.getElementById("save-api-key-btn");
 
 // login/signup form elements
 const authContainer = document.getElementById('auth-container');
@@ -189,6 +193,7 @@ function renderTasks() {
         li.className = "main-task-item";
         li.setAttribute("data-id", task.id);
         li.setAttribute("draggable", "true");
+
         li.innerHTML = `
             <div class="task-content">
                 ${hasSubtasks ? `<button class="collapse-btn" data-id="${task.id}">${isCollapsed ? '◁' : '▽'}</button>` : '<span class="collapse-placeholder"></span>'}
@@ -551,6 +556,9 @@ onAuthStateChanged(auth, (user) => {
         // Reset subtask forms state
         activeSubtaskFormId = null;
         
+        // Load API Settings for logged in user
+        loadUserSettings(user.uid);
+        
         // Run daily cleanup first
         checkAndRunCleanup(user.uid);
         
@@ -568,9 +576,120 @@ onAuthStateChanged(auth, (user) => {
         mainTasks = [];
         activeSubtaskFormId = null;
 
+        // Clear API settings input fields
+        loadUserSettings(null);
+
         // show login form and hide todo list
         authContainer.classList.remove('hidden');
         todoContainer.classList.add('hidden');
+    }
+});
+
+// Function to parse task with Gemini API
+async function parseTaskWithAI(taskText, apiKey) {
+    const todayStr = new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const prompt = `أنت مساعد ذكي متخصص في تحليل المهام وتنسيقها وتفكيكها إلى مهام فرعية عند الحاجة.
+قم بتحليل المهمة التالية المكتوبة باللغة العربية: "${taskText}".
+اليوم هو: ${todayStr}.
+
+أرجع النتيجة بصيغة JSON فقط محاطة بوسم كود الماركداون:
+\`\`\`json
+{
+  "cleanText": "نص المهمة الرئيسي بعد تنظيفه (مثال: 'مذاكرة المحاضرات' بدلاً من 'مذاكرة المحاضرات من الأولى للثالثة غداً')",
+  "recurring": true/false (هل المهمة متكررة أم لا؟),
+  "time": "الوقت المستهدف بتنسيق 24 ساعة (HH:mm) أو null إذا لم يذكر وقت محدد",
+  "date": "التاريخ المستهدف بتنسيق YYYY-MM-DD أو null إذا لم يذكر تاريخ محدد",
+  "subtasks": [] (إذا كانت المهمة تتضمن قائمة أو نطاقاً من المهام الفرعية، فككها إلى عناصر منفصلة كـ Strings بداخل هذه المصفوفة، مثلاً: ["المحاضرة الأولى", "المحاضرة الثانية", "المحاضرة الثالثة"]. وإلا فاجعلها مصفوفة فارغة)
+}
+\`\`\``;
+
+    const model = "gemini-3.1-flash-lite";
+    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 seconds timeout
+
+    try {
+        const response = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [{
+                        text: prompt
+                    }]
+                }]
+            }),
+            signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            let errMsg = "فشل الاتصال بـ Gemini API";
+            try {
+                const errorData = await response.json();
+                if (errorData.error && errorData.error.message) {
+                    errMsg = errorData.error.message;
+                }
+            } catch (e) {}
+            throw new Error(errMsg);
+        }
+
+        const data = await response.json();
+        if (!data.candidates || data.candidates.length === 0 || !data.candidates[0].content || !data.candidates[0].content.parts) {
+            throw new Error("لم يتمكن الذكاء الاصطناعي من معالجة الطلب (قد يكون بسبب قيود الأمان).");
+        }
+        const resultText = data.candidates[0].content.parts[0].text;
+        try {
+            const match = resultText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+            const jsonStr = match ? match[1] : resultText;
+            return JSON.parse(jsonStr.trim());
+        } catch (e) {
+            throw new Error("رد الذكاء الاصطناعي غير متوافق.");
+        }
+    } catch (error) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            throw new Error("استغرق خادم الذكاء الاصطناعي وقتاً أطول من اللازم للاستجابة.");
+        }
+        throw error;
+    }
+}
+
+// Function to load user specific settings
+function loadUserSettings(userId) {
+    if (!userId) {
+        geminiApiKeyInput.value = "";
+        return;
+    }
+    const savedApiKey = localStorage.getItem(`gemini_api_key_${userId}`);
+    geminiApiKeyInput.value = savedApiKey || "";
+}
+
+// AI Settings listeners & initialization
+aiSettingsToggleBtn.addEventListener("click", () => {
+    aiSettingsPanel.classList.toggle("hidden");
+});
+
+saveApiKeyBtn.addEventListener("click", () => {
+    const user = auth.currentUser;
+    if (!user) {
+        showToast("يجب تسجيل الدخول أولاً لحفظ الإعدادات", "error");
+        return;
+    }
+    
+    const key = geminiApiKeyInput.value.trim();
+    
+    if (key) {
+        localStorage.setItem(`gemini_api_key_${user.uid}`, key);
+        showToast("تم حفظ مفتاح API بنجاح! 🤖", "success");
+        aiSettingsPanel.classList.add("hidden");
+    } else {
+        localStorage.removeItem(`gemini_api_key_${user.uid}`);
+        showToast("تم إزالة مفتاح API", "info");
     }
 });
 
@@ -589,23 +708,75 @@ addBtn.addEventListener("click", async () => {
         return;
     }
 
+    const apiKey = localStorage.getItem(`gemini_api_key_${user.uid}`);
+    let cleanText = taskText;
+    let isRecurring = todoRecurring.checked;
+    let targetTime = null;
+    let targetDate = null;
+    let subtasks = [];
+
+    if (apiKey) {
+        try {
+            addBtn.disabled = true;
+            todoInput.disabled = true;
+            showToast("جاري تحليل المهمة بالذكاء الاصطناعي... 🧠", "info");
+
+            const aiResult = await parseTaskWithAI(taskText, apiKey);
+            if (aiResult) {
+                cleanText = aiResult.cleanText || taskText;
+                isRecurring = aiResult.recurring !== undefined ? aiResult.recurring : isRecurring;
+                targetTime = aiResult.time || null;
+                targetDate = aiResult.date || null;
+                subtasks = aiResult.subtasks || [];
+                
+                let successMessage = "تم تحليل المهمة بالذكاء الاصطناعي!";
+                if (isRecurring) successMessage += " (متكررة 🔄)";
+                if (targetDate) successMessage += ` (التاريخ: ${targetDate})`;
+                if (targetTime) successMessage += ` (الوقت: ${targetTime})`;
+                if (subtasks.length > 0) successMessage += ` (تتضمن ${subtasks.length} مهام فرعية)`;
+                
+                showToast(successMessage, "success");
+            }
+        } catch (error) {
+            console.error("Gemini AI Parsing Error:", error);
+            showToast(`فشل التحليل الذكي: ${error.message} (تمت الإضافة كعادية)`, "warning");
+        } finally {
+            addBtn.disabled = false;
+            todoInput.disabled = false;
+        }
+    }
+
     try {
-        const isRecurring = todoRecurring.checked;
-        
-        // Run without await so the input field clears immediately (even when offline)
-        addDoc(collection(db, "todos"), {
-            text: taskText,
+        const docRef = await addDoc(collection(db, "todos"), {
+            text: cleanText,
             createdAt: new Date(),
             userId: user.uid, // associate task with the authenticated user
             completed: false,
-            recurring: isRecurring
-        }).catch((error) => {
-            showToast("خطأ أثناء إضافة المهمة", "error");
-            console.error("خطأ أثناء إضافة المهمة في الخلفية: ", error);
+            recurring: isRecurring,
+            targetTime: targetTime,
+            targetDate: targetDate,
+            originalText: taskText
         });
+
+        // Add subtasks if there are any
+        if (subtasks.length > 0) {
+            const batch = writeBatch(db);
+            subtasks.forEach((subText) => {
+                const newSubRef = doc(collection(db, "todos"));
+                batch.set(newSubRef, {
+                    text: subText,
+                    createdAt: new Date(),
+                    userId: user.uid,
+                    completed: false,
+                    recurring: false,
+                    parentTaskId: docRef.id // link to the main task
+                });
+            });
+            await batch.commit();
+        }
         
         todoInput.value = ""; 
-        todoRecurring.checked = false; // reset checkbox
+        todoRecurring.checked = false; // reset checkbox 
     } catch (error) {
         showToast("خطأ أثناء إضافة المهمة", "error");
         console.error("خطا اثناء إضافة المهمه: ", error);

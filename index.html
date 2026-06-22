@@ -37,7 +37,22 @@
     </div>
 
     <div id="todo-container" class="todo-container hidden">
-        <h2>قائمة مهامي 🚀</h2>
+        <div class="header-container">
+            <h2>قائمة مهامي 🚀</h2>
+            <button id="ai-settings-toggle-btn" class="icon-btn" title="إعدادات الذكاء الاصطناعي">🤖⚙️</button>
+        </div>
+
+        <!-- لوحة إعدادات الذكاء الاصطناعي -->
+        <div id="ai-settings-panel" class="settings-panel hidden">
+            <div class="settings-group">
+                <label for="gemini-api-key" class="settings-label">مفتاح API الخاص بك:</label>
+                <div class="api-key-input-container">
+                    <input type="password" id="gemini-api-key" placeholder="أدخل مفتاح Gemini API">
+                </div>
+            </div>
+            <button id="save-api-key-btn" style="margin-top: 8px; width: 100%; padding: 8px; background-color: #4caf50; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">حفظ الإعدادات</button>
+            <p class="settings-help">يمكنك الحصول على مفتاح مجاني من <a href="https://aistudio.google.com/" target="_blank">Google AI Studio</a></p>
+        </div>
         
         <div class="input-section">
             <input type="text" id="todo-input" placeholder="اكتب مهمة جديدة هنا...">
@@ -49,6 +64,7 @@
                 <span>مهمة متكررة 🔄</span>
             </label>
         </div>
+
 
         <ul id="todo-list">
             </ul>
